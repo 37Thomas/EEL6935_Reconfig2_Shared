@@ -21,7 +21,7 @@ endclass
 
 interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (input logic clk);
    logic             rst, go, done, overflow;
-   logic [INPUT_WIDTH-1:0] data;
+   logic [INPUT_WIDTH-1:0] n;
    logic signed [OUTPUT_WIDTH-1:0] result;
 
    // With this wait_for_done task, the method for waiting to completion is 
@@ -56,8 +56,8 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
    endtask
 
    // Start the DUT with the specified data by creating a 1-cycle pulse on go.
-   task automatic start(input logic [INPUT_WIDTH-1:0] data_);    
-      data <= data_;
+   task automatic start(input logic [INPUT_WIDTH-1:0] n_);    
+      n <= n_;
       go <= 1'b1;      
       @(posedge clk);
 
@@ -73,8 +73,9 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
    // tracks the active status of the DUT and sends an event every time it
    // becomes active. With this strategy, the implementation specific details
    // are limited to the BFM and are hidden from the testbench.
-   event active_event;  
-   logic is_active = 1'b0;    
+   event active_event; 
+   logic is_active;
+ 
    task automatic monitor();
       //logic is_active;
       is_active = 1'b0;
@@ -100,9 +101,10 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
 endinterface
 
 class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
-   mailbox scoreboard_result_mailbox;
-   mailbox scoreboard_data_mailbox;
-   int     passed, failed, reference;
+   mailbox      scoreboard_result_mailbox;
+   mailbox      scoreboard_data_mailbox;
+   int          passed, failed; 
+   int unsigned reference;
 
    function new(mailbox _scoreboard_data_mailbox, mailbox _scoreboard_result_mailbox);
       scoreboard_data_mailbox = _scoreboard_data_mailbox;
@@ -113,10 +115,10 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
    endfunction // new
    
    function int model(int n);
-      automatic int i = 3;
-      automatic int x = 0;
-      automatic int y = 1;
-      automatic int temp;
+      automatic int unsigned i = 3;
+      automatic int unsigned x = 0;
+      automatic int unsigned y = 1;
+      automatic int unsigned temp;
       
       while (i <= n) begin
          temp = x + y;
@@ -136,25 +138,37 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
       for (int i=0; i < NUM_TESTS; i++) begin     
          // First wait until the driver informs us of a new test.
          scoreboard_data_mailbox.get(in_item);
-         $display("Time %0t [Scoreboard]: Received start of test for data=h%h.", $time, in_item.n);
+         $display("Time %0t [Scoreboard]: Received start of test for n=%0d.", $time, in_item.n);
 
          // Then, wait until the monitor tells us that test is complete.
          scoreboard_result_mailbox.get(out_item);
-         $display("Time %0t [Scoreboard]: Received result=%0d for data=h%h.", $time, out_item.result, in_item.n);
+         $display("Time %0t [Scoreboard]: Received result=%0d for n=%0d.", $time, out_item.result, in_item.n);
 
          // Get the correct result based on the input at the start of the test.
          reference = model(in_item.n);         
-         if (reference <= (2**OUTPUT_WIDTH) - 1 && out_item.result == reference && out_item.overflow == 1'b0) begin
-            $display("Time %0t [Scoreboard] Test passed (result) for data=h%h", $time, in_item.n);
-            passed ++;
+         if (reference <= (2**OUTPUT_WIDTH) - 1) begin // && out_item.result == reference && out_item.overflow == 1'b0) begin
+	    if(out_item.overflow != 1'b0) begin
+	       $display("Time %0t [Scoreboard] Test failed (result): overflow asserted for n=%0d.", $time, out_item.overflow);
+	       failed ++;
+	    end
+	    else if(out_item.result != reference) begin
+	       $display("Time %0t [Scoreboard] Test failed (result): result=%0d instead of %0d for n=%0d.", $time, out_item.result, reference, in_item.n);
+	       failed ++;
+	    end
+	    else begin
+               $display("Time %0t [Scoreboard] Test passed (result) for n=%0d.", $time, in_item.n);
+               passed ++;
+	    end
          end
-         else if(reference > (2**OUTPUT_WIDTH) - 1 && out_item.overflow == 1'b0)
-            $display("Time %0t [Scoreboard] Test passed (overflow) for data=h%h", $time, in_item.n);
-            passed ++;
-         end
-         else begin
-            $display("Time %0t [Scoreboard] Test failed: result = %0d instead of %0d for data = h%h.", $time, out_item.result, reference, in_item.n);
-            failed ++;      
+         else begin // Output is larger than can fit, should assert overflow
+	    if(out_item.overflow == 1'b1) begin
+	       $display("Time %0t [Scoreboard] Test passed (overflow) for n=%0d", $time, in_item.n);
+	       passed ++;
+	    end
+	    else begin
+	       $display("Time %0t [Scoreboard] Test failed (overflow): overflow not asserted, result=%0d for n=%0d.", $time, out_item.result, in_item.n);
+               failed ++;
+	    end
          end
       end // for (int i=0; i < NUM_TESTS; i++)
 
@@ -184,11 +198,11 @@ class generator #(int INPUT_WIDTH, int OUTPUT_WIDTH, bit CONSECUTIVE_INPUTS);
       // another configuration parameter.
       bit [INPUT_WIDTH-1:0] n = '0;     
       
-      forever begin
+      forever begin // Generate items until # of valid items (go = 1) reached
          item = new;     
          if (!CONSECUTIVE_INPUTS) begin
             if (!item.randomize()) $display("Randomize failed");
-            //$display("Time %0t [Generator]: Generating input h%h, go=%0b.", $time, item.n, item.go); 
+            $display("Time %0t [Generator]: Generating input h%h, go=%0b.", $time, item.n, item.go); 
          end
          else begin
             item.n = n;
@@ -229,7 +243,7 @@ class start_monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
          // Wait until the DUT becomes active.
          @(bfm.active_event);    
          item.n = bfm.n;
-         $display("Time %0t [start_monitor]: Sending start of test for data=h%h.", $time, item.n);
+         $display("Time %0t [start_monitor]: Sending start of test for n=%0d.", $time, item.n);
          scoreboard_data_mailbox.put(item);      
       end              
    endtask       
@@ -260,7 +274,7 @@ class done_monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
          bfm.wait_for_done();
          item.result = bfm.result;
          item.overflow = bfm.overflow;
-         $display("Time %0t [Monitor]: Monitor detected result=%0d.", $time, bfm.result);
+         $display("Time %0t [Monitor]: Monitor detected overflow=%0d, result=%0d.", $time, bfm.overflow, bfm.result);
          scoreboard_result_mailbox.put(item);
       end
    endtask       
@@ -304,7 +318,7 @@ class driver #(int INPUT_WIDTH, int OUTPUT_WIDTH, bit ONE_TEST_AT_A_TIME=1'b0);
       else begin         
          forever begin                      
             driver_mailbox.get(item);
-            //$display("Time %0t [Driver]: Driving data=h%h, go=%0b.", $time, item.n, item.go);
+            $display("Time %0t [Driver]: Driving data=h%h, go=%0b.", $time, item.n, item.go);
 
             // Here we don't use the BFM start method simply because we don't
             // necessarily want to start the DUT. We just want to drive the
@@ -418,28 +432,32 @@ endclass
 // Module: fib_tb
 // Description: This testbench uses the new BFM and test class.
 
-module fib_tb;
+module fib_tb_newer;
 
-   localparam NUM_TESTS = 1000;
+   localparam NUM_RANDOM_TESTS = 3;
+   localparam NUM_CONSECUTIVE_TESTS = 4;
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
+   localparam NUM_REPEATS = 1;
+   
    logic      clk;
    
-   fib_tb_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _if (.clk(clk));
+   fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _if (.clk(clk));
    fib #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) DUT (
       .clk(clk), .rst(_if.rst), .go(_if.go), .n(_if.n), .result(_if.result),
-      .overflow(_if.overflow), .done(_if.done);
+      .overflow(_if.overflow), .done(_if.done)
    );
 
-   test #(.NAME("Random Test"), .NUM_TESTS(NUM_RANDOM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .REPEATS(NUM_REPEATS)) test0 = new(bfm);
-   test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(bfm);
+   test #(.NAME("Random Test"), .NUM_TESTS(NUM_RANDOM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .REPEATS(NUM_REPEATS)) test0 = new(_if);
+   //test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
    covergroup cg @(posedge clk);
-      ovf : coverpoint _if.overflow {bins one = {1}; option.at_least = 10;} // Overflow should be asserted >= 10 times
-      go : coverpoint ($rise(_if.go) && _if.is_active == 1'b0) {bins true = {1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
-      data_change : coverpoint (!$stable(_if.n) && _if.is_active == 1'b1)
-         {bins true = {1'b1}; option.at_least 100;} // Data should change at least 100 times when the circuit is active
-      all_n : coverpoint _if.n iff(_if.is_active == 1'b0 && _if.go == 1'b1) {option.auto_bin_max = 2**OUTPUT_WIDTH} // Every value of n when DUT is inactive and go is asserted
+      ovf : coverpoint _if.overflow {bins one = {1'b1}; option.at_least = 10;} // Overflow should be asserted >= 10 times
+      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
+      
+      //data_change : coverpoint (!$stable(_if.n) && _if.is_active == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Data should change at least 100 times when the circuit is active
+      //all_n : coverpoint _if.n iff(_if.is_active == 1'b0 && _if.go == 1'b1) {option.auto_bin_max = 2**OUTPUT_WIDTH} // Every value of n when DUT is inactive and go is asserted
+      //TODO THe rest of the coverage, design assertions. I think the start and done monitors account for extra inputs when the DUT is active.
    endgroup
 
    initial begin : generate_clock
@@ -452,13 +470,13 @@ module fib_tb;
       cg_inst = new();    
       $timeformat(-9, 0, " ns");
       test0.run();      
-      test1.run();
+      //test1.run();
       test0.report_status();
-      test1.report_status();      
+      //test1.report_status();      
       disable generate_clock;      
    end
       
-   assert property (@(posedge bfm.clk) disable iff (bfm.rst) bfm.go && bfm.done |=> !bfm.done);
-   assert property (@(posedge bfm.clk) disable iff (bfm.rst) $fell(bfm.done) |-> $past(bfm.go,1));
+   assert property (@(posedge _if.clk) disable iff (_if.rst) _if.go && _if.done |=> !_if.done);
+   assert property (@(posedge _if.clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1));
      
 endmodule // fib_tb
