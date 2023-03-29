@@ -451,13 +451,18 @@ module fib_tb_newer;
    test #(.NAME("Random Test"), .NUM_TESTS(NUM_RANDOM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .REPEATS(NUM_REPEATS)) test0 = new(_if);
    //test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
-   covergroup cg @(posedge clk);
-      ovf : coverpoint _if.overflow {bins one = {1'b1}; option.at_least = 10;} // Overflow should be asserted >= 10 times
-      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
+   covergroup cg_clk @(posedge clk);
+      ovf   : coverpoint _if.overflow {bins one = {1'b1}; option.at_least = 10;} // Overflow should be asserted >= 10 times
+      go    : coverpoint (_if.go == 1'b1 && _if.is_active == 1'b0) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
       
       //data_change : coverpoint (!$stable(_if.n) && _if.is_active == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Data should change at least 100 times when the circuit is active
-      //all_n : coverpoint _if.n iff(_if.is_active == 1'b0 && _if.go == 1'b1) {option.auto_bin_max = 2**OUTPUT_WIDTH} // Every value of n when DUT is inactive and go is asserted
+      //all_n : coverpoint _if.n iff(_if.is_active == 1'b0 && _if.go == 1'b1) {option.auto_bin_max = 2**OUTPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted
       //TODO THe rest of the coverage, design assertions. I think the start and done monitors account for extra inputs when the DUT is active.
+   endgroup
+
+   covergroup cg_act @(_if.active_event);
+      all_n : coverpoint _if.n
+         {option.at_least = 1; option.auto_bin_max = 2**OUTPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted (invalid inputs set to 0)
    endgroup
 
    initial begin : generate_clock
@@ -465,9 +470,11 @@ module fib_tb_newer;
       while(1) #5 clk = ~clk;
    end
 
-   cg cg_inst;
+   cg_clk cg_clk_inst;
+   cg_act cg_act_inst;
    initial begin     
-      cg_inst = new();    
+      cg_clk_inst = new(); 
+      cg_act_inst = new();   
       $timeformat(-9, 0, " ns");
       test0.run();      
       //test1.run();
@@ -475,8 +482,14 @@ module fib_tb_newer;
       //test1.report_status();      
       disable generate_clock;      
    end
-      
+   
+   // Done should be reset once cycle after go is enabled while inactive
    assert property (@(posedge _if.clk) disable iff (_if.rst) _if.go && _if.done |=> !_if.done);
+
+   // Done should only be reset if go was enabled on the previous cycle
    assert property (@(posedge _if.clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1));
+
+   // n should change while active several times, needs to be manually checked
+   cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
      
 endmodule // fib_tb
