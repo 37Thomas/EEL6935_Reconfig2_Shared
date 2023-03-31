@@ -73,7 +73,7 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
    // tracks the active status of the DUT and sends an event every time it
    // becomes active. With this strategy, the implementation specific details
    // are limited to the BFM and are hidden from the testbench.
-   event active_event; 
+   event active_event;
    logic is_active;
  
    task automatic monitor();
@@ -96,7 +96,7 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
                -> active_event;        
             end
          end
-      end      
+      end 
    endtask // monitor
 endinterface
 
@@ -202,7 +202,7 @@ class generator #(int INPUT_WIDTH, int OUTPUT_WIDTH, bit CONSECUTIVE_INPUTS);
          item = new;     
          if (!CONSECUTIVE_INPUTS) begin
             if (!item.randomize()) $display("Randomize failed");
-            $display("Time %0t [Generator]: Generating input h%h, go=%0b.", $time, item.n, item.go); 
+            //$display("Time %0t [Generator]: Generating input h%h, go=%0b.", $time, item.n, item.go); 
          end
          else begin
             item.n = n;
@@ -243,7 +243,7 @@ class start_monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
          // Wait until the DUT becomes active.
          @(bfm.active_event);    
          item.n = bfm.n;
-         $display("Time %0t [start_monitor]: Sending start of test for n=%0d.", $time, item.n);
+         //$display("Time %0t [start_monitor]: Sending start of test for n=%0d.", $time, item.n);
          scoreboard_data_mailbox.put(item);      
       end              
    endtask       
@@ -274,7 +274,7 @@ class done_monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
          bfm.wait_for_done();
          item.result = bfm.result;
          item.overflow = bfm.overflow;
-         $display("Time %0t [Monitor]: Monitor detected overflow=%0d, result=%0d.", $time, bfm.overflow, bfm.result);
+         //$display("Time %0t [Monitor]: Monitor detected overflow=%0d, result=%0d.", $time, bfm.overflow, bfm.result);
          scoreboard_result_mailbox.put(item);
       end
    endtask       
@@ -311,14 +311,14 @@ class driver #(int INPUT_WIDTH, int OUTPUT_WIDTH, bit ONE_TEST_AT_A_TIME=1'b0);
             // Similarly, now we call the BFM to Wait for DUT completion, which
             // makes the driver independent of the implementation details.
             bfm.wait_for_done();            
-            $display("Time %0t [Driver]: Detected done.", $time);           
+            //$display("Time %0t [Driver]: Detected done.", $time);           
             -> driver_done_event;           
          end
       end 
       else begin         
          forever begin                      
             driver_mailbox.get(item);
-            $display("Time %0t [Driver]: Driving data=h%h, go=%0b.", $time, item.n, item.go);
+            //$display("Time %0t [Driver]: Driving data=h%h, go=%0b.", $time, item.n, item.go);
 
             // Here we don't use the BFM start method simply because we don't
             // necessarily want to start the DUT. We just want to drive the
@@ -434,11 +434,11 @@ endclass
 
 module fib_tb_newer;
 
-   localparam NUM_RANDOM_TESTS = 3;
-   localparam NUM_CONSECUTIVE_TESTS = 4;
+   localparam NUM_RANDOM_TESTS = 10;
+   localparam NUM_CONSECUTIVE_TESTS = 63; // At max n, i_r cannot be > n and fib cannot go to state DONE
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
-   localparam NUM_REPEATS = 1;
+   localparam NUM_REPEATS = 1; // 0 = no repeats
    
    logic      clk;
    
@@ -452,18 +452,17 @@ module fib_tb_newer;
    //test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
    covergroup cg_clk @(posedge clk);
-      ovf   : coverpoint _if.overflow {bins one = {1'b1}; option.at_least = 10;} // Overflow should be asserted >= 10 times
-      go    : coverpoint (_if.go == 1'b1 && _if.is_active == 1'b0) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
-      
-      //data_change : coverpoint (!$stable(_if.n) && _if.is_active == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Data should change at least 100 times when the circuit is active
-      //all_n : coverpoint _if.n iff(_if.is_active == 1'b0 && _if.go == 1'b1) {option.auto_bin_max = 2**OUTPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted
-      //TODO THe rest of the coverage, design assertions. I think the start and done monitors account for extra inputs when the DUT is active.
-   endgroup
+      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
+   endgroup // cg_clk
+
+   covergroup cg_done @(posedge _if.done);
+      ovf : coverpoint _if.overflow {bins one = {1'b1}; option.at_least = 10;} // Overflow should be asserted >= 10 times at the end of an execution (rising edge of done)
+   endgroup // cg_done
 
    covergroup cg_act @(_if.active_event);
       all_n : coverpoint _if.n
          {option.at_least = 1; option.auto_bin_max = 2**OUTPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted (invalid inputs set to 0)
-   endgroup
+   endgroup // cg_act
 
    initial begin : generate_clock
       clk = 1'b0;
@@ -471,9 +470,11 @@ module fib_tb_newer;
    end
 
    cg_clk cg_clk_inst;
+   cg_done cg_done_inst;
    cg_act cg_act_inst;
    initial begin     
-      cg_clk_inst = new(); 
+      cg_clk_inst = new();
+      cg_done_inst = new(); 
       cg_act_inst = new();   
       $timeformat(-9, 0, " ns");
       test0.run();      
@@ -484,12 +485,18 @@ module fib_tb_newer;
    end
    
    // Done should be reset once cycle after go is enabled while inactive
-   assert property (@(posedge _if.clk) disable iff (_if.rst) _if.go && _if.done |=> !_if.done);
+   done_clear_after_go : assert property (@(posedge _if.clk) disable iff (_if.rst) _if.go && _if.done |=> !_if.done);
 
    // Done should only be reset if go was enabled on the previous cycle
-   assert property (@(posedge _if.clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1));
+   go_assert_before_done : assert property (@(posedge _if.clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1));
+
+   // Result and overflow should retain their values unpon completion (while done = 1)
+   //res_stable_on_done : assert property (@(posedge _if.clk) disable iff (!_if.done) $stable(_if.result));
+   //ovf_stable_on_done : assert property (@(posedge _if.clk) disable iff (!_if.done) $stable(_if.overflow));
+   res_stable_on_done : assert property (@(_if.result) disable iff (_if.rst) !_if.done);
+   ovf_stable_on_done : assert property (@(_if.overflow) disable iff (_if.rst) !_if.done); // These pass, but I don't know if they're actually doing anything
 
    // n should change while active several times, needs to be manually checked
-   cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
+   n_change_inactive : cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
      
 endmodule // fib_tb
