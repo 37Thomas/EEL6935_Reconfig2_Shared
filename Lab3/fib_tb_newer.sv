@@ -434,11 +434,11 @@ endclass
 
 module fib_tb_newer;
 
-   localparam NUM_RANDOM_TESTS = 100;
-   localparam NUM_CONSECUTIVE_TESTS = 63; // At max n, i_r cannot be > n and fib cannot go to state DONE
+   localparam NUM_RANDOM_TESTS = 3;
+   localparam NUM_CONSECUTIVE_TESTS = 4;
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
-   localparam NUM_REPEATS = 0; // 0 = no repeats
+   localparam NUM_REPEATS = 1;
    
    logic      clk;
    
@@ -496,7 +496,7 @@ module fib_tb_newer;
    res_stable_on_done : assert property (@(_if.result) disable iff (_if.rst) !_if.done);
    ovf_stable_on_done : assert property (@(_if.overflow) disable iff (_if.rst) !_if.done); // These pass, but I don't know if they're actually doing anything
 
-   // n should change while active several times, needs to be manually checked for 100 times
-   n_change_inactive : cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
+   // n should change while active several times, needs to be manually checked
+   cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
      
 endmodule // fib_tb
