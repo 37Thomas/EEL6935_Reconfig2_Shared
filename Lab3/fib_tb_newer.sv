@@ -103,7 +103,8 @@ endinterface
 class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
    mailbox      scoreboard_result_mailbox;
    mailbox      scoreboard_data_mailbox;
-   int          passed, failed; 
+   int          passed, failed;
+   int          ovf_corr, ovf_imp, ovf_not, res_corr, res_inc;
    int unsigned reference;
 
    function new(mailbox _scoreboard_data_mailbox, mailbox _scoreboard_result_mailbox);
@@ -112,6 +113,11 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
 
       passed = 0;
       failed = 0;
+      ovf_corr = 0;
+      ovf_imp = 0;
+      ovf_not = 0;
+      res_corr = 0;
+      res_inc = 0;
    endfunction // new
    
    function int model(int n);
@@ -150,24 +156,29 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
 	    if(out_item.overflow != 1'b0) begin
 	       $display("Time %0t [Scoreboard] Test failed (result): overflow asserted for n=%0d.", $time, out_item.overflow);
 	       failed ++;
+	       ovf_imp ++;
 	    end
 	    else if(out_item.result != reference) begin
 	       $display("Time %0t [Scoreboard] Test failed (result): result=%0d instead of %0d for n=%0d.", $time, out_item.result, reference, in_item.n);
 	       failed ++;
+	       res_inc ++;
 	    end
 	    else begin
                $display("Time %0t [Scoreboard] Test passed (result) for n=%0d.", $time, in_item.n);
                passed ++;
+	       res_corr ++;
 	    end
          end
          else begin // Output is larger than can fit, should assert overflow
 	    if(out_item.overflow == 1'b1) begin
 	       $display("Time %0t [Scoreboard] Test passed (overflow) for n=%0d", $time, in_item.n);
 	       passed ++;
+	       ovf_corr ++;
 	    end
 	    else begin
 	       $display("Time %0t [Scoreboard] Test failed (overflow): overflow not asserted, result=%0d for n=%0d.", $time, out_item.result, in_item.n);
                failed ++;
+	       ovf_not ++;
 	    end
          end
       end // for (int i=0; i < NUM_TESTS; i++)
@@ -178,6 +189,8 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
 
    function void report_status();     
       $display("Test status: %0d passed, %0d failed", passed, failed);
+      $display("Correct result: %0d, Overflow properly asserted: %0d", res_corr, ovf_corr);
+      $display("Overflow improperly asserted: %0d, Overflow not asserted: %0d, Incorrect result %0d", ovf_imp, ovf_not, res_inc);
    endfunction   
    
 endclass // scoreboard
@@ -434,11 +447,11 @@ endclass
 
 module fib_tb_newer;
 
-   localparam NUM_RANDOM_TESTS = 10;
-   localparam NUM_CONSECUTIVE_TESTS = 63; // At max n, i_r cannot be > n and fib cannot go to state DONE
+   localparam NUM_RANDOM_TESTS = 100;
+   localparam NUM_CONSECUTIVE_TESTS = 64;
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
-   localparam NUM_REPEATS = 1; // 0 = no repeats
+   localparam NUM_REPEATS = 0; // 0 = no repeats
    
    logic      clk;
    
@@ -449,7 +462,7 @@ module fib_tb_newer;
    );
 
    test #(.NAME("Random Test"), .NUM_TESTS(NUM_RANDOM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .REPEATS(NUM_REPEATS)) test0 = new(_if);
-   //test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
+   test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
    covergroup cg_clk @(posedge clk);
       go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
@@ -472,15 +485,16 @@ module fib_tb_newer;
    cg_clk cg_clk_inst;
    cg_done cg_done_inst;
    cg_act cg_act_inst;
+   
    initial begin     
       cg_clk_inst = new();
       cg_done_inst = new(); 
-      cg_act_inst = new();   
+      cg_act_inst = new(); 
       $timeformat(-9, 0, " ns");
       test0.run();      
-      //test1.run();
+      test1.run();
       test0.report_status();
-      //test1.report_status();      
+      test1.report_status();      
       disable generate_clock;      
    end
    
@@ -490,13 +504,12 @@ module fib_tb_newer;
    // Done should only be reset if go was enabled on the previous cycle
    go_assert_before_done : assert property (@(posedge _if.clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1));
 
-   // Result and overflow should retain their values unpon completion (while done = 1)
-   //res_stable_on_done : assert property (@(posedge _if.clk) disable iff (!_if.done) $stable(_if.result));
-   //ovf_stable_on_done : assert property (@(posedge _if.clk) disable iff (!_if.done) $stable(_if.overflow));
-   res_stable_on_done : assert property (@(_if.result) disable iff (_if.rst) !_if.done);
-   ovf_stable_on_done : assert property (@(_if.overflow) disable iff (_if.rst) !_if.done); // These pass, but I don't know if they're actually doing anything
+   // Result and overflow should retain their values upon completion (while done = 1 and has not changed, i.e. result/overflow may change at the assertion of done)
+   res_stable_on_done : assert property (@(posedge _if.clk) ($stable(_if.done) && _if.done) |-> $stable(_if.result));
+   ovf_stable_on_done : assert property (@(posedge _if.clk) ($stable(_if.done) && _if.done) |-> $stable(_if.overflow));
+   
 
-   // n should change while active several times, needs to be manually checked
-   n_change_inactive : cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
+   // n should change while active several times, needs to be manually checked for 100 times
+   n_change_active : cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
      
 endmodule // fib_tb
