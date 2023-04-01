@@ -7,135 +7,81 @@
 
 `timescale 1 ns / 10 ps
 
-class fib_item #(INPUT_WIDTH, WIDTH);
+class fib_item #(INPUT_WIDTH, OUTPUT_WIDTH);
    rand bit [INPUT_WIDTH-1:0] n;
    rand bit go;   
 
    bit overflow;
    bit signed [OUTPUT_WIDTH-1:0] result;
 
-   // A uniform distribution of go values probably isn't what we want, so
-   // we'll make sure go is 0 90% of the time.
+   bit timeout;
+
    constraint c_go_dist { go dist{0 :/ 90, 1:/ 10 }; }
 endclass
 
-interface fib_if #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (input logic clk);
-    logic rst, go, done, overflow;
-    logic [INPUT_WIDTH-1:0] n;
-    logic [OUTPUT_WIDTH-1:0] result;
-endinterface
+interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (input logic clk);
+   logic             rst, go, done, overflow;
+   logic [INPUT_WIDTH-1:0] n;
+   logic signed [OUTPUT_WIDTH-1:0] result;
 
-class generator #(int INPUT_WIDTH, int OUTPUT_WIDTH);
-   mailbox driver_mailbox;
-   event   driver_done_event;
-
-   function new(mailbox _driver_mailbox, event _driver_done_event);
-      driver_mailbox = _driver_mailbox;
-      driver_done_event = _driver_done_event;      
-   endfunction // new
-  
-   task run();
-      fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item;
-
-      forever begin
-         item = new;     
-         if (!item.randomize()) $display("Randomize failed");
-         //$display("Time %0t [Generator]: Generating input h%h, go=%0b.", $time, item.data, item.go);
-
-         driver_mailbox.put(item);
-         @(driver_done_event);
-      end
+   task automatic wait_for_done();
+      @(posedge clk iff (done == 1'b0));
+      @(posedge clk iff (done == 1'b1));      
    endtask
-endclass // generator
 
-
-class driver #(int INPUT_WIDTH, int OUTPUT_WIDTH);
-   virtual fib_if #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) vif;
-   mailbox driver_mailbox;
-   mailbox scoreboard_data_mailbox;
-   event   driver_done_event;
-
-   // New constructor to establish all connections.
-   function new(virtual fib_if #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _vif, mailbox _driver_mailbox, 
-                mailbox _scoreboard_data_mailbox, event _driver_done_event);
-      vif = _vif;      
-      driver_mailbox = _driver_mailbox;
-      scoreboard_data_mailbox = _scoreboard_data_mailbox;
-      driver_done_event = _driver_done_event;      
-   endfunction // new
+   task automatic wait_for_done_timeout();
+      fork //Waits for either done to be asserted or for 200us to pass before exiting to account for infinite loops
+         wait_for_done();
+         #200us;
+      join_any     
+   endtask
    
-   task run();
-      // To know whether or not generated inputs will create a DUT output, 
-      // we need to know whether or not the DUT is currently active.
-      logic is_first_test = 1'b1;      
-      logic is_active = 1'b0;
-      $display("Time %0t [Driver]: Driver starting.", $time);
+   // Reset the design.
+   task automatic reset(int cycles);
+      rst <= 1'b1;
+      go <= 1'b0;      
+      for (int i=0; i < cycles; i++) @(posedge clk);
+      @(negedge clk);
+      rst <= 1'b0;
+      @(posedge clk);      
+   endtask
+
+   // Start the DUT with the specified data by creating a 1-cycle pulse on go.
+   task automatic start(input logic [INPUT_WIDTH-1:0] n_);    
+      n <= n_;
+      go <= 1'b1;      
+      @(posedge clk);
+
+      go <= 1'b0;    
+   endtask // start
+   
+   event active_event;
+   logic is_active;
+ 
+   task automatic monitor();
+      is_active = 1'b0;
             
       forever begin
-         fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item;
-         
-         // If the circuit is reset at any point, reset the driver state.
-         while (vif.rst) begin
-            @(posedge vif.clk);   
-            is_first_test = 1'b1;
-            is_active = 1'b0;               
+         @(posedge clk);
+         if (rst) is_active = 1'b0;
+         else begin         
+            if (done) is_active = 1'b0;     
+            if (!is_active && go) begin                
+               is_active = 1'b1;
+
+               -> active_event;        
+            end
          end
-         
-         driver_mailbox.get(item);
-         //$display("Time %0t [Driver]: Driving data=h%h, go=%0b.", $time, item.data, item.go);
-         
-         vif.data = item.data;
-         vif.go = item.go;
-         @(posedge vif.clk);
-                 
-         // If done is asserted, or if this is the first_test, 
-         // then the DUT should be inactive and ready for another test.  
-         if (vif.done || is_first_test)
-           is_active = 1'b0;
-                                 
-         // If the DUT isn't already active, and we get a go signal, we are
-         // starting a test, so inform the scoreboard. The scoreboard will
-         // then wait to get the result from the monitor.        
-         if (!is_active && vif.go) begin            
-            $display("Time %0t [Driver]: Sending start of test for data=h%h.", $time, item.data);
-            scoreboard_data_mailbox.put(item);
-            is_active = 1'b1;       
-            is_first_test = 1'b0;
-         end
-
-         -> driver_done_event;   
-      end              
-   endtask       
-endclass // driver
-
-class monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
-   virtual fib_if #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) vif;
-   mailbox scoreboard_result_mailbox;
-
-   function new(virtual fib_if #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _vif, mailbox _scoreboard_result_mailbox);
-      vif = _vif;
-      scoreboard_result_mailbox = _scoreboard_result_mailbox;            
-   endfunction // new
-   
-   task run();
-      $display("Time %0t [Monitor]: Monitor starting.", $time);
-      
-      forever begin
-         fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item = new;
-         @(posedge vif.clk iff (vif.done == 1'b0));      
-         @(posedge vif.clk iff (vif.done == 1'b1));      
-         item.result = vif.result;
-         item.overflow = vif.overflow;
-         $display("Time %0t [Monitor]: Monitor detected overflow = %0d, result=%0d.", $time, vif.overflow, vif.result);
-         scoreboard_result_mailbox.put(item);
-      end
-   endtask       
-endclass
+      end 
+   endtask // monitor
+endinterface
 
 class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
-   mailbox scoreboard_result_mailbox;
-   mailbox scoreboard_data_mailbox;
-   int     passed, failed, reference;
+   mailbox      scoreboard_result_mailbox;
+   mailbox      scoreboard_data_mailbox;
+   int          passed, failed;
+   int          ovf_corr, ovf_imp, ovf_not, res_corr, res_inc, timeout;
+   int unsigned reference;
 
    function new(mailbox _scoreboard_data_mailbox, mailbox _scoreboard_result_mailbox);
       scoreboard_data_mailbox = _scoreboard_data_mailbox;
@@ -143,13 +89,20 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
 
       passed = 0;
       failed = 0;
+      ovf_corr = 0;
+      ovf_imp = 0;
+      ovf_not = 0;
+      res_corr = 0;
+      res_inc = 0;
+      timeout = 0;
+      
    endfunction // new
    
    function int model(int n);
-      automatic int i = 3;
-      automatic int x = 0;
-      automatic int y = 1;
-      automatic int temp;
+      automatic int unsigned i = 3;
+      automatic int unsigned x = 0;
+      automatic int unsigned y = 1;
+      automatic int unsigned temp;
       
       while (i <= n) begin
          temp = x + y;
@@ -169,26 +122,50 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
       for (int i=0; i < NUM_TESTS; i++) begin     
          // First wait until the driver informs us of a new test.
          scoreboard_data_mailbox.get(in_item);
-         $display("Time %0t [Scoreboard]: Received start of test for data=h%h.", $time, in_item.data);
+         $display("Time %0t [Scoreboard]: Received start of test for n=%0d.", $time, in_item.n);
 
          // Then, wait until the monitor tells us that test is complete.
          scoreboard_result_mailbox.get(out_item);
-         $display("Time %0t [Scoreboard]: Received result=%0d for data=h%h.", $time, out_item.result, in_item.data);
+         $display("Time %0t [Scoreboard]: Received result=%0d for n=%0d.", $time, out_item.result, in_item.n);
 
          // Get the correct result based on the input at the start of the test.
-         reference = model(in_item.data);         
-         if (reference <= (2**OUTPUT_WIDTH) - 1 && out_item.result == reference && out_item.overflow == 1'b0) begin
-            $display("Time %0t [Scoreboard] Test passed (result) for data=h%h", $time, in_item.data);
-            passed ++;
-         end
-         else if(reference > (2**OUTPUT_WIDTH) - 1 && out_item.overflow == 1'b0)
-            $display("Time %0t [Scoreboard] Test passed (overflow) for data=h%h", $time, in_item.data);
-            passed ++;
-         end
-         else begin
-            $display("Time %0t [Scoreboard] Test failed: result = %0d instead of %0d for data = h%h.", $time, out_item.result, reference, in_item.data);
-            failed ++;      
-         end
+	 if(out_item.timeout) begin
+	    $display("Time %0t [Scoreboard]: Test timed out for n=%0d.", $time, in_item.n);
+	    failed ++;
+	    timeout ++;
+	 end
+	 else begin
+            reference = model(in_item.n);         
+            if (reference <= (2**OUTPUT_WIDTH) - 1) begin // && out_item.result == reference && out_item.overflow == 1'b0) begin
+	       if(out_item.overflow != 1'b0) begin
+		  $display("Time %0t [Scoreboard] Test failed (result): overflow asserted for n=%0d.", $time, out_item.overflow);
+		  failed ++;
+		  ovf_imp ++;
+	       end
+	       else if(out_item.result != reference) begin
+		  $display("Time %0t [Scoreboard] Test failed (result): result=%0d instead of %0d for n=%0d.", $time, out_item.result, reference, in_item.n);
+		  failed ++;
+		  res_inc ++;
+	       end
+	       else begin
+		  $display("Time %0t [Scoreboard] Test passed (result) for n=%0d.", $time, in_item.n);
+		  passed ++;
+		  res_corr ++;
+	       end
+            end
+            else begin // Output is larger than can fit, should assert overflow
+	       if(out_item.overflow == 1'b1) begin
+		  $display("Time %0t [Scoreboard] Test passed (overflow) for n=%0d", $time, in_item.n);
+		  passed ++;
+		  ovf_corr ++;
+	       end
+	       else begin
+		  $display("Time %0t [Scoreboard] Test failed (overflow): overflow not asserted, result=%0d for n=%0d.", $time, out_item.result, in_item.n);
+		  failed ++;
+		  ovf_not ++;
+	       end
+            end // else: !if(reference <= (2**OUTPUT_WIDTH) - 1)
+	 end
       end // for (int i=0; i < NUM_TESTS; i++)
 
       while(scoreboard_data_mailbox.try_get(in_item));
@@ -197,94 +174,297 @@ class scoreboard #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
 
    function void report_status();     
       $display("Test status: %0d passed, %0d failed", passed, failed);
+      $display("Correct result: %0d, Overflow properly asserted: %0d", res_corr, ovf_corr);
+      $display("Overflow improperly asserted: %0d, Overflow not asserted: %0d, Incorrect result: %0d, Timeout: %0d", ovf_imp, ovf_not, res_inc, timeout);
    endfunction   
    
 endclass // scoreboard
 
-class env #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH);
+class generator #(int INPUT_WIDTH, int OUTPUT_WIDTH, bit CONSECUTIVE_INPUTS);
+   mailbox driver_mailbox;
+   event   driver_done_event;
 
-   generator #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) gen;
-   driver  #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) drv;
-   monitor #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) monitor;
-   scoreboard #(.NUM_TESTS(NUM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH))scoreboard;
+   function new(mailbox _driver_mailbox, event _driver_done_event);
+      driver_mailbox = _driver_mailbox;
+      driver_done_event = _driver_done_event;      
+   endfunction // new
+  
+   task run();
+      fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item;
+
+      // Start the consecutive sequence at 0. 
+      bit [INPUT_WIDTH-1:0] n = '0;     
+      
+      forever begin // Generate items until # of valid items (go = 1) reached
+         item = new;     
+         if (!CONSECUTIVE_INPUTS) begin
+            if (!item.randomize()) $display("Randomize failed");
+            //$display("Time %0t [Generator]: Generating input h%h, go=%0b.", $time, item.n, item.go); 
+         end
+         else begin
+            item.n = n;
+            n ++;        
+         end
+         driver_mailbox.put(item);
+         @(driver_done_event);
+      end     
+   endtask
+endclass // generator
+
+class start_monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
+   virtual           fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm;
+   mailbox           scoreboard_data_mailbox;
+
+   function new(virtual fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm, 
+                mailbox _scoreboard_data_mailbox);
+      this.bfm = bfm;      
+      scoreboard_data_mailbox = _scoreboard_data_mailbox;
+   endfunction // new
+
+   task run();
+      fork
+         // Start the BFM monitor to track the active status.
+         bfm.monitor();
+         detect_start();         
+      join_any
+   endtask
    
+   task detect_start();    
+      forever begin
+         fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item = new;
+
+         // Wait until the DUT becomes active.
+         @(bfm.active_event);    
+         item.n = bfm.n;
+         //$display("Time %0t [start_monitor]: Sending start of test for n=%0d.", $time, item.n);
+         scoreboard_data_mailbox.put(item);      
+      end              
+   endtask       
+endclass
+
+class done_monitor #(int INPUT_WIDTH, int OUTPUT_WIDTH);
+   virtual           fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm;
+   mailbox           scoreboard_result_mailbox;
+
+   function new(virtual fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm, 
+                mailbox _scoreboard_result_mailbox);
+      this.bfm = bfm;
+      scoreboard_result_mailbox = _scoreboard_result_mailbox;            
+   endfunction // new
+   
+   task run();
+      $display("Time %0t [Monitor]: Monitor starting.", $time);
+      
+      forever begin
+         fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item = new;
+
+         bfm.wait_for_done_timeout();
+         item.result = bfm.result;
+         item.overflow = bfm.overflow;
+
+         if(bfm.done != 1'b1) item.timeout = 1'b1;
+         else item.timeout = 1'b0;
+
+         $display("Time %0t [Monitor]: Monitor detected overflow=%0d, result=%0d.", $time, bfm.overflow, bfm.result);
+         scoreboard_result_mailbox.put(item);
+      end
+   endtask       
+endclass
+
+class driver #(int INPUT_WIDTH, int OUTPUT_WIDTH, bit ONE_TEST_AT_A_TIME=1'b0);
+   virtual           fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm;
+   mailbox           driver_mailbox;
+   event             driver_done_event;
+
+   function new(virtual fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm, 
+                mailbox _driver_mailbox, 
+                event   _driver_done_event);
+      this.bfm = bfm;      
+      driver_mailbox = _driver_mailbox;
+      driver_done_event = _driver_done_event;      
+   endfunction // new
+   
+   task run();
+      fib_item #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) item;
+      $display("Time %0t [Driver]: Driver starting.", $time);
+
+      if (ONE_TEST_AT_A_TIME) begin
+         forever begin
+            driver_mailbox.get(item);
+
+            bfm.start(item.n);
+
+            bfm.wait_for_done_timeout();     
+
+            if(bfm.done != 1'b1) bfm.reset(1);
+
+            //$display("Time %0t [Driver]: Detected done.", $time);           
+            -> driver_done_event;           
+         end
+      end 
+      else begin         
+         forever begin                      
+            driver_mailbox.get(item);
+            //$display("Time %0t [Driver]: Driving data=h%h, go=%0b.", $time, item.n, item.go);
+
+            bfm.n = item.n;
+            bfm.go = item.go;
+            @(posedge bfm.clk);
+            -> driver_done_event;
+         end
+      end              
+   endtask       
+endclass
+
+class env #(int NUM_TESTS, int INPUT_WIDTH, int OUTPUT_WIDTH, 
+             bit CONSECUTIVE_INPUTS=1'b0,
+             bit ONE_TEST_AT_A_TIME=1'b0 );
+
+   generator #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(CONSECUTIVE_INPUTS)) gen_h;
+   driver  #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .ONE_TEST_AT_A_TIME(ONE_TEST_AT_A_TIME)) drv_h;
+   done_monitor #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) done_monitor_h;
+   start_monitor #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) start_monitor_h;
+   scoreboard #(.NUM_TESTS(NUM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) scoreboard_h;
+
    mailbox scoreboard_data_mailbox;
    mailbox scoreboard_result_mailbox;
    mailbox driver_mailbox;
 
    event   driver_done_event;
    
-   function new(virtual fib_if #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) vif);      
+   function new(virtual fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm);      
       scoreboard_data_mailbox = new;
       scoreboard_result_mailbox = new;
       driver_mailbox = new;
       
-      gen = new(driver_mailbox, driver_done_event);
-      drv = new(vif, driver_mailbox, scoreboard_data_mailbox, driver_done_event);
-      monitor = new(vif, scoreboard_result_mailbox);
-      scoreboard = new(scoreboard_data_mailbox, scoreboard_result_mailbox);
+      gen_h = new(driver_mailbox, driver_done_event);
+      drv_h = new(bfm, driver_mailbox, driver_done_event);
+      done_monitor_h = new(bfm, scoreboard_result_mailbox);
+      start_monitor_h = new(bfm, scoreboard_data_mailbox);
+      scoreboard_h = new(scoreboard_data_mailbox, scoreboard_result_mailbox);
    endfunction // new
-
+     
+   function void report_status();
+      scoreboard_h.report_status();
+   endfunction
+   
    virtual task run();      
       fork
-         gen.run();
-         drv.run();
-         monitor.run();
-         scoreboard.run();       
+         gen_h.run();
+         drv_h.run();
+         done_monitor_h.run();
+         start_monitor_h.run();
+         scoreboard_h.run();     
       join_any
 
-      scoreboard.report_status();      
+      disable fork;      
    endtask // run   
+endclass // env
+
+class test #(string NAME="default_test_name", 
+              int NUM_TESTS, 
+              int INPUT_WIDTH, int OUTPUT_WIDTH, 
+              bit CONSECUTIVE_INPUTS=1'b0,
+              bit ONE_TEST_AT_A_TIME=1'b0, 
+              int REPEATS=0);
+
+   virtual        fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm;
+   env #(.NUM_TESTS(NUM_TESTS),
+          .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH),
+          .CONSECUTIVE_INPUTS(CONSECUTIVE_INPUTS),
+          .ONE_TEST_AT_A_TIME(ONE_TEST_AT_A_TIME)) env_h;
+
+   function new(virtual fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) bfm);
+      this.bfm = bfm;
+      env_h = new(bfm);
+   endfunction // new
+
+   function void report_status();
+      $display("Results for Test %0s", NAME);      
+      env_h.report_status();
+   endfunction
+   
+   task run();
+      $display("Time %0t [Test]: Starting test %0s.", $time, NAME);
+      
+      // Repeat the tests the specified number of times.
+      for (int i=0; i < REPEATS+1; i++) begin
+         if (i > 0) $display("Time %0t [Test]: Repeating test %0s (pass %0d).", $time, NAME, i+1);
+         
+         // We update the test to use the BFM reset method.
+         bfm.reset(5);
+         env_h.run();
+         @(posedge bfm.clk);     
+      end
+      $display("Time %0t [Test]: Test completed.", $time);      
+   endtask   
 endclass
 
 module fib_tb;
 
-   localparam NUM_TESTS = 1000;
+   localparam NUM_RANDOM_TESTS = 100;
+   localparam NUM_CONSECUTIVE_TESTS = 66;
    localparam INPUT_WIDTH  = 6;
-   localparam OUTPUT_WIDTH = 16;   
+   localparam OUTPUT_WIDTH = 16;  
+   localparam NUM_REPEATS = 1; // 0 = no repeats
    
-   logic clk;
-
-   fib_tb_if #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _if (.clk(clk));
+   logic      clk;
+   
+   fib_bfm #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _if (.clk(clk));
    fib #(.INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) DUT (
       .clk(clk), .rst(_if.rst), .go(_if.go), .n(_if.n), .result(_if.result),
-      .overflow(_if.overflow), .done(_if.done);
+      .overflow(_if.overflow), .done(_if.done)
    );
 
-   // Pass the interface to the constructor so that the environment isn't
-   // created in an invalid state that requires further initialization.
-   env #(.NUM_TESTS(NUM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH)) _env = new(_if);
+   test #(.NAME("Random Test"), .NUM_TESTS(NUM_RANDOM_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .REPEATS(NUM_REPEATS)) test0 = new(_if);
+   test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
-   covergroup cg @(posedge clk);
-      ovf : coverpoint _if.overflow {bins one = {1}; option.at_least = 10;} // Overflow should be asserted >= 10 times
-      go : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
-      data_change : coverpoint (!$stable(_if.n) && _if.done == 1'b1 && $past(_if.done, 1) == 1'b1)
-         {bins true = {1'b1}; option.at_least 100;} // Data should change at least 100 times when the circuit is inactive - i have no idea of this is correct
-   endgroup
-   
+   covergroup cg_clk @(posedge clk);
+      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
+   endgroup // cg_clk
+
+   covergroup cg_done @(posedge _if.done);
+      ovf : coverpoint _if.overflow {bins one = {1'b1}; option.at_least = 10;} // Overflow should be asserted >= 10 times at the end of an execution (rising edge of done)
+   endgroup // cg_done
+
+   covergroup cg_act @(_if.active_event);
+      all_n : coverpoint _if.n
+         {option.at_least = 1; option.auto_bin_max = 2**OUTPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted (invalid inputs set to 0)
+   endgroup // cg_act
+
    initial begin : generate_clock
       clk = 1'b0;
       while(1) #5 clk = ~clk;
    end
-   
-   cg cg_inst;
-   initial begin     
-      cg_inst = new(); 
-      $timeformat(-9, 0, " ns");
-      _if.rst <= 1'b1;
-      _if.go <= 1'b0;      
-      for (int i=0; i < 5; i++) @(posedge clk);
-      @(negedge clk);     
-      _if.rst <= 1'b0;
-      @(posedge clk);     
-      _env.run();
 
-      $display("Coverage = %0.2f %%", cg_inst.get_inst_coverage());
+   cg_clk cg_clk_inst;
+   cg_done cg_done_inst;
+   cg_act cg_act_inst;
+   
+   initial begin     
+      cg_clk_inst = new();
+      cg_done_inst = new(); 
+      cg_act_inst = new(); 
+      $timeformat(-9, 0, " ns");
+      test0.run();      
+      test1.run();
+      test0.report_status();
+      test1.report_status();      
       disable generate_clock;      
    end
-      
-   assert property (@(posedge clk) disable iff (_if.rst) _if.go && _if.done |=> !_if.done); // Done should deassert one cycle after go is asserted
-   assert property (@(posedge clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1)); //  If done is deasserted, go should be asserted one cycle in the past
+   
+   // Done should be reset once cycle after go is enabled while inactive
+   done_clear_after_go : assert property (@(posedge _if.clk) disable iff (_if.rst) _if.go && _if.done |=> !_if.done);
 
+   // Done should only be reset if go was enabled on the previous cycle
+   go_assert_before_done : assert property (@(posedge _if.clk) disable iff (_if.rst) $fell(_if.done) |-> $past(_if.go,1));
+
+   // Result and overflow should retain their values upon completion (while done = 1 and has not changed, i.e. result/overflow may change at the assertion of done)
+   res_stable_on_done : assert property (@(posedge _if.clk) ($stable(_if.done) && _if.done) |-> $stable(_if.result));
+   ovf_stable_on_done : assert property (@(posedge _if.clk) ($stable(_if.done) && _if.done) |-> $stable(_if.overflow));
+   
+
+   // n should change while active several times, needs to be manually checked for 100 times
+   n_change_active : cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
      
 endmodule // fib_tb
