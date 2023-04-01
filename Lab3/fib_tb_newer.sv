@@ -448,7 +448,7 @@ endclass
 module fib_tb_newer;
 
    localparam NUM_RANDOM_TESTS = 100;
-   localparam NUM_CONSECUTIVE_TESTS = 64;
+   localparam NUM_CONSECUTIVE_TESTS = 64; // At max n, i_r cannot be > n and fib cannot go to state DONE
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
    localparam NUM_REPEATS = 0; // 0 = no repeats
