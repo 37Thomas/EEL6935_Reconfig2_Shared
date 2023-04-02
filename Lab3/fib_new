@@ -179,8 +179,7 @@ typedef enum {START, COND, COMPUTE, OVERFLOW, DONE} state_t;
 	      i_r <= 3;
 	      x_r <= '0;
 	      y_r <= 1;	  
-		  full_add_r <= '0;
-		//   overflow_r <= '0;	      
+		  full_add_r <= '0;      
 	      if (go == 1'b1) begin
 			done_r <= 1'b0;
 			overflow_r <= '0;
