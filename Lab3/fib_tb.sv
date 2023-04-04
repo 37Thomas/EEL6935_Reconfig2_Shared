@@ -402,7 +402,7 @@ endclass
 
 module fib_tb;
 
-   localparam NUM_RANDOM_TESTS = 100;
+   localparam NUM_RANDOM_TESTS = 200;
    localparam NUM_CONSECUTIVE_TESTS = 66;
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
@@ -420,7 +420,7 @@ module fib_tb;
    test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
    covergroup cg_clk @(posedge clk);
-      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when inactive
+      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b0) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when active
    endgroup // cg_clk
 
    covergroup cg_done @(posedge _if.done);
@@ -429,7 +429,7 @@ module fib_tb;
 
    covergroup cg_act @(_if.active_event);
       all_n : coverpoint _if.n
-         {option.at_least = 1; option.auto_bin_max = 2**OUTPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted (invalid inputs set to 0)
+         {option.at_least = 1; option.auto_bin_max = 2**INPUT_WIDTH;} // Every value of n when DUT is inactive and go is asserted (invalid inputs set to 0)
    endgroup // cg_act
 
    initial begin : generate_clock
@@ -463,7 +463,6 @@ module fib_tb;
    res_stable_on_done : assert property (@(posedge _if.clk) ($stable(_if.done) && _if.done) |-> $stable(_if.result));
    ovf_stable_on_done : assert property (@(posedge _if.clk) ($stable(_if.done) && _if.done) |-> $stable(_if.overflow));
    
-
    // n should change while active several times, needs to be manually checked for 100 times
    n_change_active : cover property (@(posedge _if.clk) !$stable(_if.n) |-> _if.is_active);
      
