@@ -3,6 +3,7 @@
 // up to you to expand on the provided testbench to discover and document all
 // the errors in a report.
 //
+// Thomas Le, Haritha Vipinakumar
 
 /*=============================================================================
  Parameter Descriptions

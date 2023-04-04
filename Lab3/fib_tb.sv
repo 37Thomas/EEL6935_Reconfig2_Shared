@@ -1,9 +1,8 @@
-// Greg Stitt
+// fib_tb.sv
+// Thomas Le, Haritha Vipinakumar
+// 
+// Adapted from bit_diff_tb.sv by Greg Stitt
 // University of Florida
-//
-// This file contains a collection of testbenches that graduate evolve a simple
-// testbench into a more complex constrained-random verfication (CRV) testbench
-// that would be used to test more complex modules.
 
 `timescale 1 ns / 10 ps
 
@@ -57,13 +56,23 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
    
    event active_event;
    logic is_active;
+   logic prev_go;
  
    task automatic monitor();
+      logic prev_go_del;
+      
       is_active = 1'b0;
+      prev_go = 1'b0;
+      prev_go_del = 1'b0;
             
       forever begin
          @(posedge clk);
-         if (rst) is_active = 1'b0;
+	 prev_go = prev_go_del;
+	 
+         if (rst) begin
+	    is_active = 1'b0;
+	 end
+	 
          else begin         
             if (done) is_active = 1'b0;     
             if (!is_active && go) begin                
@@ -71,6 +80,8 @@ interface fib_bfm #(parameter int INPUT_WIDTH, parameter int OUTPUT_WIDTH) (inpu
 
                -> active_event;        
             end
+
+	    if(go) prev_go_del = 1'b1;
          end
       end 
    endtask // monitor
@@ -402,7 +413,7 @@ endclass
 
 module fib_tb;
 
-   localparam NUM_RANDOM_TESTS = 200;
+   localparam NUM_RANDOM_TESTS = 250;
    localparam NUM_CONSECUTIVE_TESTS = 66;
    localparam INPUT_WIDTH  = 6;
    localparam OUTPUT_WIDTH = 16;  
@@ -420,7 +431,7 @@ module fib_tb;
    test #(.NAME("Consecutive Test"), .NUM_TESTS(NUM_CONSECUTIVE_TESTS), .INPUT_WIDTH(INPUT_WIDTH), .OUTPUT_WIDTH(OUTPUT_WIDTH), .CONSECUTIVE_INPUTS(1'b1), .ONE_TEST_AT_A_TIME(1'b1), .REPEATS(NUM_REPEATS)) test1 = new(_if);
 
    covergroup cg_clk @(posedge clk);
-      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b0) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when active
+      go  : coverpoint (_if.go == 1'b1 && _if.done == 1'b0 && _if.prev_go == 1'b1) {bins true = {1'b1}; option.at_least = 100;} // Go ahould be asserted >= 100 times when active
    endgroup // cg_clk
 
    covergroup cg_done @(posedge _if.done);
