@@ -16,6 +16,7 @@
 // Changes applied:
 // Change 1: Registered the FIFO output so it does not have to go directly to the multiplier
 // Change 2: Changed counting logic for count_r to match the example from class
+// Change 3: Added multicycle path to total_count_r increment
 
 
 module bit_diff
@@ -124,7 +125,7 @@ module fifo
    
    always @(posedge clk) begin
       if (valid_wr) ram[wr_addr_r] = wr_data;
-      rd_data <= ram[rd_addr];      
+      rd_data <= ram[rd_addr];   
    end
    
    always @(posedge clk or posedge rst) begin
@@ -197,6 +198,8 @@ module timing_example
 
    // DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
    logic [63:0]                      total_count_r;
+	
+	logic tc_en0, tc_en1; // Change 3
       
    // Perform a bit_diff on data_in.
    bit_diff #(.WIDTH(INPUT_WIDTH)) bit_diff_ (.go(data_in_valid), 
@@ -222,11 +225,16 @@ module timing_example
          // If the current bit_diff_done is asserted and the previous cycle
          // wasn't, we just had a new completion, so increment the count.
          if (bit_diff_done && !bit_diff_done_r) begin
-            total_count_r <= total_count_r + 1'b1;
+            //total_count_r <= total_count_r + 1'b1;// Change 3
 
             // Write the output to the FIFO upon completion.
-            fifo_wr_en <= 1'b1;     
+            fifo_wr_en <= 1'b1; 
          end
+			
+			// Change 3: These statements
+			tc_en0 <= bit_diff_done && !bit_diff_done_r;
+			tc_en1 <= tc_en0;
+			if(tc_en1) total_count_r <= total_count_r + 1'b1;
       end
    end
    
@@ -243,7 +251,7 @@ module timing_example
    ////////////////////////////////////////////////////////
    // Instantiate a multiply-add tree.
    
-   logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], pipe_in_del_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
+   logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
    
    always_ff @(posedge clk or posedge rst) begin
       if (rst) begin
@@ -258,7 +266,6 @@ module timing_example
             // Register all the pipeline inputs. You can assume these inputs 
             // never change in the middle of execution.
             pipe_in_r[i] <= pipe_in[i];     
-            pipe_in_del_r[i] <= pipe_in_r[i]; // Change 1
             mult_out[i] <= fifo_rd_data_r * pipe_in_r[i]; // Change 1
          end         
       end
