@@ -16,7 +16,10 @@
 // Changes applied:
 // Change 1: Registered the FIFO output so it does not have to go directly to the multiplier
 // Change 2: Changed counting logic for count_r to match the example from class
-// Change 3: Decrementing total_count from maximum 
+// Change 3: Added multicycle path to total_count_r increment
+// Change 4: Adjusted FIFO read-on-write to remove bypass logic, added delayed valid signal to FIFO
+// Change 5: Registered each stage of the pipeline
+// Change 6: Register duplication of fifo_rd_data
 
 module bit_diff
   #(
@@ -76,7 +79,7 @@ module bit_diff
               if (count_r == WIDTH-1) begin
                  result_r <= next_diff;
                  done_r <= 1'b1;
-                 state_r <= START;
+                 state_r <= RESTART;
               end
            end
         
@@ -110,7 +113,8 @@ module fifo
     input logic [WIDTH-1:0]  wr_data,
     output logic             empty, 
     input logic              rd_en,
-    output logic [WIDTH-1:0] rd_data  
+    output logic [WIDTH-1:0] rd_data,
+	 output logic valid // Change 4 
     );
   
    logic [WIDTH-1:0]         ram[DEPTH];
@@ -118,13 +122,15 @@ module fifo
 
    localparam int            COUNT_WIDTH = $clog2(DEPTH)+1;   
    logic [COUNT_WIDTH-1:0]   count_r, next_count, update_count; // Change 2
-   logic                     valid_wr, valid_rd;
+   logic                     valid_wr, valid_rd, val0; // Change 4
    
-   assign rd_addr = !valid_rd ? rd_addr_r : rd_addr_r + 1'b1;
+   // assign rd_addr = !valid_rd ? rd_addr_r : rd_addr_r + 1'b1;// Change 4
    
    always @(posedge clk) begin
-      if (valid_wr) ram[wr_addr_r] = wr_data;
-      rd_data <= ram[rd_addr];      
+      if (valid_wr) ram[wr_addr_r] <= wr_data;
+      if (val0) rd_data <= ram[rd_addr_r];  // Change 4 
+		val0 <= valid_rd;
+		valid <= val0;
    end
    
    always @(posedge clk or posedge rst) begin
@@ -138,7 +144,7 @@ module fifo
             wr_addr_r <= wr_addr_r + 1'b1;
             //count_r = count_r + 1'b1;       // Change 2      
          end
-         if (valid_rd) begin 
+         if (val0) begin // Change 4
             rd_addr_r <= rd_addr_r + 1'b1;
             //count_r <= count_r - 1'b1;    // Change 2         
          end
@@ -172,7 +178,8 @@ module timing_example
     parameter int INPUT_WIDTH=32,
     parameter int OUTPUT_WIDTH=8,
     parameter int COUNTER_WIDTH=64,
-    parameter int NUM_PIPELINES=16
+    parameter int NUM_PIPELINES=16,
+    parameter int MAX_FANOUT=4             // Change 6 
     )
    (
     input logic                      clk,
@@ -190,13 +197,17 @@ module timing_example
    logic                               bit_diff_done, bit_diff_done_r;
    logic                               first_execution_r;   
    
-   localparam int                      FIFO_DEPTH = 512;
+   localparam int                      FIFO_DEPTH = 16;
    logic [$bits(bit_diff_out)-1:0]     fifo_rd_data, fifo_rd_data_r; // Change 1
    logic                               fifo_wr_en, fifo_rd_en;
    logic                               fifo_full, fifo_almost_full, fifo_empty;   
 
+   (* maxfan = MAX_FANOUT *) logic [$bits(bit_diff_out)-1:0] 	 fifo_rd_data_in_r;     //change 6
+ 
    // DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
    logic [63:0]                      total_count_r;
+	
+	logic tc_en0, tc_en1; // Change 3
       
    // Perform a bit_diff on data_in.
    bit_diff #(.WIDTH(INPUT_WIDTH)) bit_diff_ (.go(data_in_valid), 
@@ -207,7 +218,7 @@ module timing_example
    // Count the total number of bit_diff executions since reset
    always_ff @(posedge clk or posedge rst) begin
       if (rst) begin
-         total_count_r <= NUM_PIPELINES;  //change 3
+         total_count_r <= '0;
          bit_diff_done_r <= 1'b0;
          fifo_wr_en <= 1'b0;         
          first_execution_r <= 1'b1;      
@@ -222,67 +233,75 @@ module timing_example
          // If the current bit_diff_done is asserted and the previous cycle
          // wasn't, we just had a new completion, so increment the count.
          if (bit_diff_done && !bit_diff_done_r) begin
-            total_count_r <= total_count_r - 1'b1;    //change 3
-            
+            //total_count_r <= total_count_r + 1'b1;// Change 3
+
             // Write the output to the FIFO upon completion.
-            fifo_wr_en <= 1'b1;     
+            fifo_wr_en <= 1'b1; 
          end
+			
+			// Change 3: These statements
+			tc_en0 <= bit_diff_done && !bit_diff_done_r;
+			tc_en1 <= tc_en0;
+			if(tc_en1) total_count_r <= total_count_r + 1'b1;
       end
    end
    
    assign count = total_count_r;   
    assign ready = first_execution_r || (bit_diff_done_r && !fifo_almost_full);
+	
+	logic fifo_vld; // Change 4
          
    fifo #(.WIDTH($bits(bit_diff_out)), .DEPTH(FIFO_DEPTH)) fifo_ 
      (.wr_en(fifo_wr_en), .full(fifo_full), .almost_full(fifo_almost_full), 
-      .wr_data(bit_diff_out), .rd_en(fifo_rd_en), .rd_data(fifo_rd_data), 
+      .wr_data(bit_diff_out), .rd_en(fifo_rd_en), .rd_data(fifo_rd_data), .valid(fifo_vld),
       .empty(fifo_empty), .*);
 
    assign fifo_rd_en = !fifo_empty;
       
    ////////////////////////////////////////////////////////
    // Instantiate a multiply-add tree.
-   
-   logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], pipe_in_del_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
+  
+   logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
    
    always_ff @(posedge clk or posedge rst) begin
-      if (rst) begin
+		if (rst) begin
          for (int i=0; i < NUM_PIPELINES; i++) begin
             pipe_in_r[i] <= '0;
             mult_out[i] <= '0;
          end
       end
       else begin     
-         fifo_rd_data_r <= fifo_rd_data; // Change 1             
+         fifo_rd_data_in_r <= fifo_rd_data; // Change 1             
          for (int i=0; i < NUM_PIPELINES; i++) begin
             // Register all the pipeline inputs. You can assume these inputs 
             // never change in the middle of execution.
             pipe_in_r[i] <= pipe_in[i];     
-            pipe_in_del_r[i] <= pipe_in_r[i]; // Change 1
-            mult_out[i] <= fifo_rd_data_r * pipe_in_r[i]; // Change 1
-         end  
-         // change 3 
+            mult_out[i] <= fifo_rd_data_in_r * pipe_in_r[i]; // Change 1
+         end   
+
+         // Change 5  
          for (int i=0; i < 8; i++) add_l0[i] <= mult_out[2*i] + mult_out[2*i+1];
          for (int i=0; i < 4; i++) add_l1[i] <= add_l0[2*i] + add_l0[2*i+1];
          for (int i=0; i < 2; i++) add_l2[i] <= add_l1[2*i] + add_l1[2*i+1];
-         data_out <= add_l2[0] + add_l2[1];      
+         data_out <= add_l2[0] + add_l2[1];        
       end
    end
 
+   // Change 5
    // Adder tree that sums all the multiplier outputs
-   // always_comb begin
-   //    for (int i=0; i < 8; i++) add_l0[i] = mult_out[2*i] + mult_out[2*i+1];
-   //    for (int i=0; i < 4; i++) add_l1[i] = add_l0[2*i] + add_l0[2*i+1];
-   //    for (int i=0; i < 2; i++) add_l2[i] = add_l1[2*i] + add_l1[2*i+1];
-   //    data_out = add_l2[0] + add_l2[1];
-   // end
+   //always_comb begin
+   //   for (int i=0; i < 8; i++) add_l0[i] = mult_out[2*i] + mult_out[2*i+1];
+   //   for (int i=0; i < 4; i++) add_l1[i] = add_l0[2*i] + add_l0[2*i+1];
+   //   for (int i=0; i < 2; i++) add_l2[i] = add_l1[2*i] + add_l1[2*i+1];
+   //   data_out = add_l2[0] + add_l2[1];
+   //end
    
    ////////////////////////////////////////////////////
    // Logic for valid_out
 
    // IF YOU MAKE CHANGES THAT INCREASE LATENCY OF THE MULTIPLY-ADD TREE, YOU
    // WILL NEED TO CHANGE THIS LOCALPARAM.
-   localparam int                        PIPE_LATENCY = 2; // Change 1
+   localparam int                        PIPE_LATENCY = 6; // Change 1, 5
    logic [0:PIPE_LATENCY-1]              valid_delay_r;
    
    always_ff @(posedge clk or posedge rst) begin
@@ -290,7 +309,7 @@ module timing_example
          for (int i=0; i < PIPE_LATENCY; i++) valid_delay_r[i] = '0;
       end
       else begin
-         valid_delay_r[0] <= fifo_rd_en;       
+         valid_delay_r[0] <= fifo_vld; // Change 4     
          for (int i=1; i < PIPE_LATENCY; i++) valid_delay_r[i] <= valid_delay_r[i-1];    
       end      
    end
