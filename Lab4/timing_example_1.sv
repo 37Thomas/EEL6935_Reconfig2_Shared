@@ -203,9 +203,11 @@ module timing_example
    logic                               fifo_wr_en, fifo_rd_en;
    logic                               fifo_full, fifo_almost_full, fifo_empty;   
 
-   (* maxfan = MAX_FANOUT *) logic [$bits(bit_diff_out)-1:0] 	 fifo_rd_data_in_r;     // Change 6
- 
-   // DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
+  // (* maxfan = MAX_FANOUT *) logic [$bits(bit_diff_out)-1:0] 	 fifo_rd_data_in_r;     // Change 6
+    localparam int 		  NUM_DUP_REGS = NUM_PIPELINES % MAX_FANOUT == 0 ? NUM_PIPELINES / MAX_FANOUT : NUM_PIPELINES / MAX_FANOUT + 1;
+    (* dont_merge *) logic [$bits(bit_diff_out)-1:0] 	 fifo_rd_data_in_r[NUM_DUP_REGS];
+  
+	// DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
    logic [63:0]                      total_count_r;
 	
 	logic tc_en0, tc_en1; // Change 3
@@ -264,22 +266,25 @@ module timing_example
   
    logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
    
-   always_ff @(posedge clk or posedge rst) begin
-		// Change 7
-      //if (rst) begin
-      //   for (int i=0; i < NUM_PIPELINES; i++) begin
-      //      pipe_in_r[i] <= '0;
-      //      mult_out[i] <= '0;
-      //   end
-      //end
-      //else begin     
-         fifo_rd_data_in_r <= fifo_rd_data; // Change 1             
+  always_ff @(posedge clk or posedge rst) begin
+	  //Change 7
+	// 	if (rst) begin
+   //       fifo_rd_data_r <= '0;
+	//       for (int i=0; i < NUM_DUP_REGS; i++) fifo_rd_data_in_r[i] <= '0;
+   //       for (int i=0; i < NUM_PIPELINES; i++) begin
+   //          pipe_in_r[i] <= '0;
+   //          mult_out[i] <= '0;
+   //       end
+   //    end
+   //    else begin     
+         fifo_rd_data_r <= fifo_rd_data; // Change 1    
+         for (int i=0; i < NUM_DUP_REGS; i++) fifo_rd_data_in_r[i] <= fifo_rd_data_r;         
          for (int i=0; i < NUM_PIPELINES; i++) begin
             // Register all the pipeline inputs. You can assume these inputs 
             // never change in the middle of execution.
             pipe_in_r[i] <= pipe_in[i];     
-            mult_out[i] <= fifo_rd_data_in_r * pipe_in_r[i]; // Change 1
-         end   
+            mult_out[i] <= fifo_rd_data_r * pipe_in_r[i]; // Change 1
+         end    
 
          // Change 5  
          for (int i=0; i < 8; i++) add_l0[i] <= mult_out[2*i] + mult_out[2*i+1];
