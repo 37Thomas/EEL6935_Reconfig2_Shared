@@ -19,6 +19,8 @@
 // Change 3: Added multicycle path to total_count_r increment
 // Change 4: Adjusted FIFO read-on-write to remove bypass logic, added delayed valid signal to FIFO
 // Change 5: Registered each stage of the pipeline
+// Change 6: Register duplication of fifo_rd_data
+// Change 7: Removed reset logic for the pipeline registers
 
 module bit_diff
   #(
@@ -177,7 +179,7 @@ module timing_example
     parameter int INPUT_WIDTH=32,
     parameter int OUTPUT_WIDTH=8,
     parameter int COUNTER_WIDTH=64,
-    parameter int NUM_PIPELINES=16
+    parameter int NUM_PIPELINES=16,
     )
    (
     input logic                      clk,
@@ -196,11 +198,11 @@ module timing_example
    logic                               first_execution_r;   
    
    localparam int                      FIFO_DEPTH = 16;
-   logic [$bits(bit_diff_out)-1:0]     fifo_rd_data, fifo_rd_data_r; // Change 1
+   (* maxfan = 4 *) logic [$bits(bit_diff_out)-1:0]     fifo_rd_data, fifo_rd_data_r; // Change 1, 6
    logic                               fifo_wr_en, fifo_rd_en;
    logic                               fifo_full, fifo_almost_full, fifo_empty;   
-
-   // DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
+  
+	// DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
    logic [63:0]                      total_count_r;
 	
 	logic tc_en0, tc_en1; // Change 3
@@ -256,31 +258,34 @@ module timing_example
       
    ////////////////////////////////////////////////////////
    // Instantiate a multiply-add tree.
-   
+  
    logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
    
-   always_ff @(posedge clk or posedge rst) begin
-		if (rst) begin
-         for (int i=0; i < NUM_PIPELINES; i++) begin
-            pipe_in_r[i] <= '0;
-            mult_out[i] <= '0;
-         end
-      end
-      else begin     
-         fifo_rd_data_r <= fifo_rd_data; // Change 1             
+  always_ff @(posedge clk or posedge rst) begin
+	  //Change 7
+	// 	if (rst) begin
+   //       fifo_rd_data_r <= '0;
+	//       for (int i=0; i < NUM_DUP_REGS; i++) fifo_rd_data_in_r[i] <= '0;
+   //       for (int i=0; i < NUM_PIPELINES; i++) begin
+   //          pipe_in_r[i] <= '0;
+   //          mult_out[i] <= '0;
+   //       end
+   //    end
+   //    else begin     
+         fifo_rd_data_r <= fifo_rd_data; // Change 1         
          for (int i=0; i < NUM_PIPELINES; i++) begin
             // Register all the pipeline inputs. You can assume these inputs 
             // never change in the middle of execution.
             pipe_in_r[i] <= pipe_in[i];     
             mult_out[i] <= fifo_rd_data_r * pipe_in_r[i]; // Change 1
-         end   
+         end    
 
          // Change 5  
          for (int i=0; i < 8; i++) add_l0[i] <= mult_out[2*i] + mult_out[2*i+1];
          for (int i=0; i < 4; i++) add_l1[i] <= add_l0[2*i] + add_l0[2*i+1];
          for (int i=0; i < 2; i++) add_l2[i] <= add_l1[2*i] + add_l1[2*i+1];
          data_out <= add_l2[0] + add_l2[1];        
-      end
+      //end
    end
 
    // Change 5
@@ -313,4 +318,3 @@ module timing_example
    assign data_out_valid = valid_delay_r[PIPE_LATENCY-1];
    
 endmodule
-
