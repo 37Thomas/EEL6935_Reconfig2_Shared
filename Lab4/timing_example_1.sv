@@ -20,6 +20,7 @@
 // Change 4: Adjusted FIFO read-on-write to remove bypass logic, added delayed valid signal to FIFO
 // Change 5: Registered each stage of the pipeline
 // Change 6: Register duplication of fifo_rd_data
+// Change 7: Removed reset logic for the pipeline registers
 
 module bit_diff
   #(
@@ -202,7 +203,7 @@ module timing_example
    logic                               fifo_wr_en, fifo_rd_en;
    logic                               fifo_full, fifo_almost_full, fifo_empty;   
 
-   (* maxfan = MAX_FANOUT *) logic [$bits(bit_diff_out)-1:0] 	 fifo_rd_data_in_r;     //change 6
+   (* maxfan = MAX_FANOUT *) logic [$bits(bit_diff_out)-1:0] 	 fifo_rd_data_in_r;     // Change 6
  
    // DO NOT CHANGE THE WIDTH ANY THIS SIGNAL
    logic [63:0]                      total_count_r;
@@ -264,13 +265,14 @@ module timing_example
    logic [OUTPUT_WIDTH-1:0] pipe_in_r[NUM_PIPELINES], mult_out[NUM_PIPELINES], add_l0[8], add_l1[4], add_l2[2]; // Change 1
    
    always_ff @(posedge clk or posedge rst) begin
-		if (rst) begin
-         for (int i=0; i < NUM_PIPELINES; i++) begin
-            pipe_in_r[i] <= '0;
-            mult_out[i] <= '0;
-         end
-      end
-      else begin     
+		// Change 7
+      //if (rst) begin
+      //   for (int i=0; i < NUM_PIPELINES; i++) begin
+      //      pipe_in_r[i] <= '0;
+      //      mult_out[i] <= '0;
+      //   end
+      //end
+      //else begin     
          fifo_rd_data_in_r <= fifo_rd_data; // Change 1             
          for (int i=0; i < NUM_PIPELINES; i++) begin
             // Register all the pipeline inputs. You can assume these inputs 
@@ -284,7 +286,7 @@ module timing_example
          for (int i=0; i < 4; i++) add_l1[i] <= add_l0[2*i] + add_l0[2*i+1];
          for (int i=0; i < 2; i++) add_l2[i] <= add_l1[2*i] + add_l1[2*i+1];
          data_out <= add_l2[0] + add_l2[1];        
-      end
+      //end
    end
 
    // Change 5
